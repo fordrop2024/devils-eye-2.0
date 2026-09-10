@@ -1,0 +1,6 @@
+{
+  "name": "The Devil's Eye",
+  "description": "AI-powered movie and web-series explainer creation platform and professional video editor with futuristic cinema intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
