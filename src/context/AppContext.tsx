@@ -3,18 +3,21 @@
  * Orchestrates authentic cinema AI pipeline state, navigation, projects, and logs.
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
-import { Project, PageId, SystemLog, AICommandLog, StoryVersion, ScriptVersion, Timeline, TimelineVersion, Subtitle, MasterNarratorProfile } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode, useMemo } from 'react';
+import { Project, PageId, SystemLog, AICommandLog, StoryVersion, ScriptVersion, Timeline, TimelineVersion, Subtitle, MasterNarratorProfile, MovieRecord, AnalysisJob, MediaFileRecord, EyeConfig, EyeColorPreset, EyeResponseMode } from '../types';
+import { DevilEyeState } from '../components/common/DevilEye';
+import { DEFAULT_EYE_CONFIG, COLOR_PRESETS } from '../services/eyeConfigDefaults';
 import { DEMO_PROJECTS } from '../services/demoData';
 import { generateAnalyzedProjectData } from '../services/aiIntelligenceEngine';
-import { generateStoryBeats, generateExplainerScript, executeDirectorCommand } from '../services/storyEngineService';
+import { generateStoryBeats, generateExplainerScript } from '../services/storyEngineService';
 import { generateAiFirstCut, FIRST_CUT_STAGES, FirstCutResult } from '../services/aiFirstCutService';
 import { executeAiEditorCommand } from '../services/aiEditorService';
-import { executeGlobalAiDirector } from '../services/aiDirectorService';
+import { executeGlobalAiDirector, executeDirectorCommand } from '../services/aiDirectorService';
 import { storageService } from '../services/storageService';
 import { TimelineHistory } from '../services/timelineHistory';
 import { repairProjectVoiceConsistency } from '../services/voiceConsistencyService';
 import { playHudClick, playHudSuccess, playHudWarning, playHudScan, setSoundMuted, getSoundMuted } from '../services/soundFx';
+import { uploadMovieFile, fetchMovieStatus, triggerAiAnalysis, fetchAnalysisJob, fetchLatestJobForMovie, fetchAllMovies, deleteMovieRecord } from '../services/moviePipelineApi';
 
 export interface ToastMessage {
   id: string;
@@ -38,6 +41,21 @@ interface AppContextType {
   setCurrentProjectId: (id: string) => void;
   createProject: (newProj: Partial<Project>) => void;
   updateCurrentProject: (updates: Partial<Project>) => void;
+
+  // Movie Upload & Gemini Pipeline
+  activeMovieRecord?: MovieRecord;
+  activeAnalysisJob?: AnalysisJob | null;
+  isMovieUploading: boolean;
+  movieUploadProgress: number;
+  uploadMovie: (file: File, metadata?: { duration?: number; resolution?: string; fps?: number }) => Promise<MovieRecord>;
+  startAnalysisJob: () => Promise<void>;
+  checkMovieGeminiStatus: () => Promise<MovieRecord | null>;
+  isIngestionCenterOpen: boolean;
+  setIsIngestionCenterOpen: (open: boolean) => void;
+  movieLibraryList: MovieRecord[];
+  refreshMovieLibrary: () => Promise<MovieRecord[]>;
+  selectMovieFromLibrary: (movie: MovieRecord) => Promise<void>;
+  deleteMovie: (movieId: string) => Promise<void>;
 
   // Two-way Script <-> Scene Linking
   selectedSegmentId: string;
@@ -108,12 +126,25 @@ interface AppContextType {
   isMobileSidebarOpen: boolean;
   toggleMobileSidebar: () => void;
   setIsMobileSidebarOpen: (open: boolean) => void;
+
+  // Devil's Eye Global AI Identity & Control
+  eyeConfig: EyeConfig;
+  updateEyeConfig: (updates: Partial<EyeConfig>) => void;
+  resetEyeConfig: () => void;
+  saveEyeConfig: () => void;
+  importEyeConfig: (jsonString: string) => boolean;
+  exportEyeConfig: () => string;
+  devilEyeState: DevilEyeState;
+  setDevilEyeStateOverride: (state: DevilEyeState | null) => void;
+  isLoginModalOpen: boolean;
+  setIsLoginModalOpen: (open: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const LOCAL_STORAGE_KEY = 'devils_eye_projects_v1';
 const AUTH_KEY = 'devils_eye_auth_v1';
+const EYE_STORAGE_KEY = 'devils_eye_config_v1';
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Auth state
@@ -138,140 +169,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Navigation
   const [activePage, setActivePage] = useState<PageId>('command-center');
 
-  // Projects
+  // Projects - pure persistent state, without fake data injection
   const [projects, setProjects] = useState<Project[]>(() => {
-    let initialList: Project[] = DEMO_PROJECTS;
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          initialList = parsed;
+          return parsed;
         }
       }
     } catch {
-      // fallback to demo
+      // fallback
     }
-
-    // Ensure project 0 is enriched with complete Step 2 & 3 multimodal cinema intelligence
-    return initialList.map((p, idx) => {
-      if (idx === 0) {
-        const enriched = generateAnalyzedProjectData(p);
-        const beats = p.storyBeats && p.storyBeats.length >= 13 ? p.storyBeats : generateStoryBeats(p, 'Psychological', '20 min');
-        const script = p.script && p.script.segments && p.script.segments.length >= 13 
-          ? p.script 
-          : generateExplainerScript(p, beats, 'English', '20 min');
-        
-        return {
-          ...p,
-          ...enriched,
-          analysisStatus: 'ANALYSIS COMPLETE',
-          storyPotentialScore: p.storyPotentialScore || 94,
-          storyBeats: beats,
-          script: script,
-          storyConfig: p.storyConfig || {
-            selectedGenre: 'Psychological',
-            targetDuration: '20 min',
-            targetDurationSec: 1200,
-            targetWords: 3000,
-            estimatedNarrationDuration: '20:00',
-            estimatedNarrationSec: 1200,
-            language: 'English',
-            delayInformationStrategy: true,
-            storytellingStrategy: 'Reality Destabilization & Subjective Labyrinths'
-          },
-          storyVersions: p.storyVersions || [
-            {
-              id: 'story-v1',
-              versionName: 'Story V1',
-              timestamp: '14:20',
-              genre: 'Psychological',
-              durationLabel: '20 min',
-              beats: beats,
-              strategy: 'Reality Destabilization & Subjective Labyrinths',
-              summary: 'Initial 13-stage explainer structure with Cobb-Mal totem mystery.'
-            }
-          ],
-          scriptVersions: p.scriptVersions || [
-            {
-              id: 'script-v1',
-              versionName: 'Script V1',
-              timestamp: '14:25',
-              language: 'English',
-              wordsCount: script.wordsCount,
-              targetDuration: '20 min',
-              estimatedNarrationDuration: script.estimatedNarrationDuration || '20:00',
-              segments: script.segments
-            }
-          ],
-          voiceSettings: p.voiceSettings || {
-            gcpConfigured: false,
-            selectedLanguage: 'hi-IN',
-            selectedVoiceId: 'hi-IN-Neural2-B',
-            gender: 'male',
-            speakingRate: 1.0,
-            pitch: 0,
-            volumeGainDb: 0,
-            deliveryPreset: 'Cinematic',
-            ssmlMode: false,
-            ssmlText: '',
-            pauseMs: 450,
-            customPronunciations: [
-              { term: 'PASIV', ipa: 'p-ah-s-i-v' },
-              { term: 'Ariadne', ipa: 'ah-ree-ahd-nee' },
-              { term: 'Limbo', ipa: 'l-ih-m-b-oh' }
-            ]
-          },
-          masterNarratorVoiceId: p.masterNarratorVoiceId || 'hi-IN-Neural2-B',
-          masterNarratorProfile: p.masterNarratorProfile || {
-            provider: 'google',
-            voiceId: 'hi-IN-Neural2-B',
-            voiceName: 'Aarav (Hindi Deep Baritone)',
-            gender: 'male',
-            language: 'hi-IN',
-            mode: 'cinematic',
-            speakingRate: 1.0,
-            pitch: 0,
-            volumeGainDb: 0,
-            intensity: 75,
-            emotion: 'Dramatic',
-            styleInstructions: 'Cinematic movie narrator with deliberate dramatic pauses and theatrical gravity.',
-            enabled: true,
-            energy: 70,
-            dramaticLevel: 85,
-            suspenseLevel: 60,
-            pauseStrength: 75,
-            sentencePauseMs: 500,
-            paragraphPauseMs: 900,
-            emphasisStrength: 75,
-            emotionLevel: 75,
-            safeLanguageMode: 'NORMAL'
-          },
-          timeline: (p.timeline && p.timeline.tracks && p.timeline.tracks.length >= 8) 
-            ? p.timeline 
-            : generateAiFirstCut({ ...p, ...enriched, storyBeats: beats, script }).timeline,
-          timelineVersions: p.timelineVersions && p.timelineVersions.length > 0 
-            ? p.timelineVersions 
-            : [
-                {
-                  id: 'timeline-v1',
-                  name: 'V1 — AI First Cut',
-                  timestamp: '14:30',
-                  totalDuration: (p.timeline && p.timeline.totalDuration) || 1472,
-                  clipCount: 28,
-                  description: 'Automated 13-stage multimodal cinema cut with 5-channel audio stems.',
-                  tracks: (p.timeline && p.timeline.tracks) || []
-                }
-              ]
-        };
-      } else {
-        return {
-          ...p,
-          analysisStatus: p.analysisStatus || 'NOT ANALYZED',
-          storyPotentialScore: p.storyPotentialScore || 78,
-        };
-      }
-    });
+    return DEMO_PROJECTS;
   });
 
   const [currentProjectId, setCurrentProjectIdState] = useState<string>(DEMO_PROJECTS[0].id);
@@ -286,6 +197,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isFirstCutRunning, setIsFirstCutRunning] = useState<boolean>(false);
   const [firstCutStage, setFirstCutStage] = useState<string>('ANALYZING');
   const [firstCutProgress, setFirstCutProgress] = useState<number>(0);
+
+  // Movie Pipeline & Gemini States
+  const [isMovieUploading, setIsMovieUploading] = useState<boolean>(false);
+  const [movieUploadProgress, setMovieUploadProgress] = useState<number>(0);
+  const [activeAnalysisJob, setActiveAnalysisJob] = useState<AnalysisJob | null>(null);
+  const [isIngestionCenterOpen, setIsIngestionCenterOpen] = useState<boolean>(false);
+  const [movieLibraryList, setMovieLibraryList] = useState<MovieRecord[]>([]);
 
   // System status
   const [systemStatus, setSystemStatus] = useState<'ONLINE' | 'STANDBY' | 'ANALYZING' | 'RENDERING'>('ONLINE');
@@ -303,8 +221,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsMobileSidebarOpen(prev => !prev);
   }, []);
 
-  // Toasts
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
 
   // AI Command state
   const [isAiThinking, setIsAiThinking] = useState<boolean>(false);
@@ -316,6 +233,87 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [exportFormat, setExportFormat] = useState<string>('YouTube (16:9 4K)');
+
+  // Devil's Eye Global Configuration & AI Identity State
+  const [eyeConfig, setEyeConfig] = useState<EyeConfig>(() => {
+    try {
+      const saved = localStorage.getItem(EYE_STORAGE_KEY);
+      if (saved) {
+        return { ...DEFAULT_EYE_CONFIG, ...JSON.parse(saved) };
+      }
+    } catch {}
+    return DEFAULT_EYE_CONFIG;
+  });
+
+  const [eyeStateOverride, setEyeStateOverride] = useState<DevilEyeState | null>(null);
+
+  // Compute real Devil's Eye state based on live system events
+  const devilEyeState = useMemo<DevilEyeState>(() => {
+    if (eyeStateOverride) return eyeStateOverride;
+    if (isMovieUploading) return 'PROCESSING';
+    if (activeAnalysisJob?.status === 'RUNNING') return 'ANALYZING';
+    if (isAiThinking) return 'THINKING';
+    if (isExporting) return 'PROCESSING';
+    if (activeAnalysisJob?.status === 'FAILED') return 'ERROR';
+    if (activeAnalysisJob?.status === 'COMPLETED') return 'SUCCESS';
+    if (activePage === 'movie-intelligence') return 'FOCUS';
+    if (activePage === 'eye-control') return 'WATCHING';
+    return 'IDLE';
+  }, [
+    eyeStateOverride,
+    isMovieUploading,
+    activeAnalysisJob?.status,
+    isAiThinking,
+    isExporting,
+    activePage
+  ]);
+
+  const updateEyeConfig = useCallback((updates: Partial<EyeConfig>) => {
+    setEyeConfig(prev => {
+      const next = { ...prev, ...updates };
+      try {
+        localStorage.setItem(EYE_STORAGE_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const resetEyeConfig = useCallback(() => {
+    setEyeConfig(DEFAULT_EYE_CONFIG);
+    try {
+      localStorage.setItem(EYE_STORAGE_KEY, JSON.stringify(DEFAULT_EYE_CONFIG));
+    } catch {}
+    playHudSuccess();
+  }, []);
+
+  const saveEyeConfig = useCallback(() => {
+    try {
+      localStorage.setItem(EYE_STORAGE_KEY, JSON.stringify(eyeConfig));
+      playHudSuccess();
+    } catch {}
+  }, [eyeConfig]);
+
+  const importEyeConfig = useCallback((jsonString: string): boolean => {
+    try {
+      const parsed = JSON.parse(jsonString);
+      if (typeof parsed === 'object' && parsed !== null) {
+        const validated: EyeConfig = { ...DEFAULT_EYE_CONFIG, ...parsed };
+        setEyeConfig(validated);
+        localStorage.setItem(EYE_STORAGE_KEY, JSON.stringify(validated));
+        playHudSuccess();
+        return true;
+      }
+    } catch {}
+    playHudWarning();
+    return false;
+  }, []);
+
+  const exportEyeConfig = useCallback((): string => {
+    return JSON.stringify(eyeConfig, null, 2);
+  }, [eyeConfig]);
+
+  // Toasts
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // System Logs
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([
@@ -453,6 +451,426 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return p;
     }));
   }, [currentProject.id]);
+
+  // Real Movie Upload & Gemini Pipeline Operations
+  const refreshMovieLibrary = useCallback(async (): Promise<MovieRecord[]> => {
+    try {
+      const list = await fetchAllMovies();
+      setMovieLibraryList(list);
+      return list;
+    } catch (e) {
+      console.warn('Could not load movie library:', e);
+      return [];
+    }
+  }, []);
+
+  const selectMovieFromLibrary = useCallback(async (movie: MovieRecord) => {
+    playHudClick();
+    localStorage.setItem('devil_eye_active_movie_id', movie.id);
+
+    const mediaEntry: MediaFileRecord = {
+      id: movie.id,
+      name: movie.originalName,
+      type: 'video',
+      size: movie.fileSize,
+      fileSizeFormatted: movie.fileSizeFormatted,
+      duration: movie.duration || 7200,
+      durationFormatted: movie.durationFormatted || '02:00:00',
+      resolution: movie.resolution || '1080p',
+      fps: movie.fps || 24,
+      audioTracksCount: 2,
+      audioCodec: 'AAC / 48kHz Stereo',
+      subtitleTracksCount: 0,
+      subtitleTracks: [],
+      status: movie.status === 'ACTIVE' ? 'ready' : movie.status === 'FAILED' ? 'error' : 'processing',
+      url: movie.url || '',
+      uploadedAt: movie.uploadTimestamp,
+    };
+
+    // Check if an analysis job already exists for this movie
+    const latestJob = await fetchLatestJobForMovie(movie.id).catch(() => null);
+    const isJobCompleted = latestJob?.status === 'COMPLETED';
+
+    updateCurrentProject({
+      title: movie.originalName.replace(/\.[^/.]+$/, '').toUpperCase(),
+      activeMovieRecord: movie,
+      videoSourceUrl: movie.url,
+      mediaFiles: [mediaEntry],
+      duration: movie.durationFormatted || '02:00:00',
+      durationSec: movie.duration || 7200,
+      resolution: movie.resolution || '1080p',
+      fps: movie.fps || 24,
+      status: movie.status === 'ACTIVE' ? 'ingested' : 'uploading',
+      analysisStatus: isJobCompleted ? 'ANALYSIS COMPLETE' : 'NOT ANALYZED',
+      activeJobId: latestJob ? latestJob.id : undefined,
+      scenes: isJobCompleted && latestJob?.result?.scenes ? latestJob.result.scenes.map((s: any, idx: number) => ({
+        id: `scene-${String(idx + 1).padStart(3, '0')}`,
+        sceneNumber: s.sceneNumber || idx + 1,
+        title: s.title || `Scene ${idx + 1}`,
+        timestampStart: s.timestampStart || '00:00:00',
+        timestampEnd: s.timestampEnd || '00:02:00',
+        startSec: s.startSec || 0,
+        endSec: s.endSec || 120,
+        durationSec: (s.endSec || 120) - (s.startSec || 0),
+        location: s.location || 'Location',
+        timeOfDay: s.timeOfDay || 'day',
+        characters: s.characters || [],
+        dialogueLines: [],
+        audioTranscript: '',
+        keyEvent: s.keyEvent || '',
+        twistScore: s.twistScore || 50,
+        suspenseScore: s.suspenseScore || 50,
+        emotionalScore: s.emotionalScore || 50,
+        visualSummary: s.visualSummary || '',
+        tags: s.tags || [],
+        importanceScore: s.importanceScore || 75,
+        isCandidateForCut: true,
+        isLocked: false,
+        isExcluded: false,
+      })) : [],
+      characters: isJobCompleted && latestJob?.result?.characters ? latestJob.result.characters.map((c: any, idx: number) => ({
+        id: c.id || `char-${idx + 1}`,
+        name: c.name || `Character ${idx + 1}`,
+        actor: c.actor || 'Actor',
+        role: c.role || 'supporting',
+        archetype: c.archetype || 'Key Figure',
+        confidence: c.confidence || 95,
+        screenTimeMinutes: c.screenTimeMinutes || 15,
+        description: c.description || '',
+        relationships: [],
+      })) : [],
+    });
+
+    setActiveAnalysisJob(latestJob || null);
+    addToast('Movie Loaded', `Selected "${movie.originalName}" from Movie Library`, 'success');
+    addLog(`[MOVIE PIPELINE] Active movie set to "${movie.originalName}" (${movie.id})`, 'info');
+  }, [updateCurrentProject, addToast, addLog]);
+
+  const deleteMovie = useCallback(async (movieId: string) => {
+    playHudClick();
+    try {
+      await deleteMovieRecord(movieId);
+      await refreshMovieLibrary();
+      if (currentProject.activeMovieRecord?.id === movieId) {
+        updateCurrentProject({
+          activeMovieRecord: undefined,
+          videoSourceUrl: '',
+          mediaFiles: [],
+          analysisStatus: 'NOT ANALYZED',
+          scenes: [],
+          characters: [],
+        });
+        localStorage.removeItem('devil_eye_active_movie_id');
+      }
+      addToast('Movie Deleted', 'Movie record removed from system', 'info');
+      addLog(`[MOVIE PIPELINE] Movie ${movieId} deleted from storage`, 'info');
+    } catch (err: any) {
+      addToast('Delete Failed', err.message || 'Could not delete movie', 'error');
+    }
+  }, [currentProject.activeMovieRecord, refreshMovieLibrary, updateCurrentProject, addToast, addLog]);
+
+  // Initial load of movie library and active movie preservation
+  useEffect(() => {
+    refreshMovieLibrary().then(async (movies) => {
+      if (!movies || movies.length === 0) return;
+      const savedActiveMovieId = localStorage.getItem('devil_eye_active_movie_id');
+      const movieToSelect = (savedActiveMovieId && movies.find(m => m.id === savedActiveMovieId)) || movies[0];
+      if (movieToSelect) {
+        selectMovieFromLibrary(movieToSelect);
+      }
+    });
+  }, []);
+
+  const uploadMovie = useCallback(async (
+    file: File,
+    metadata?: { duration?: number; resolution?: string; fps?: number }
+  ): Promise<MovieRecord> => {
+    setIsMovieUploading(true);
+    setMovieUploadProgress(0);
+    addLog(`[MOVIE PIPELINE] Initiating upload for "${file.name}"...`, 'info');
+    addToast('Movie Upload Initialized', `Uploading ${file.name} to server & Gemini Files API`, 'info');
+
+    try {
+      const record = await uploadMovieFile(
+        file,
+        {
+          ...metadata,
+          projectId: currentProject.id,
+        },
+        (pct) => {
+          setMovieUploadProgress(pct);
+        }
+      );
+
+      setIsMovieUploading(false);
+      setMovieUploadProgress(100);
+
+      localStorage.setItem('devil_eye_active_movie_id', record.id);
+      await refreshMovieLibrary();
+
+      const mediaEntry: MediaFileRecord = {
+        id: record.id,
+        name: record.originalName,
+        type: 'video',
+        size: record.fileSize,
+        fileSizeFormatted: record.fileSizeFormatted,
+        duration: record.duration || 7200,
+        durationFormatted: record.durationFormatted || '02:00:00',
+        resolution: record.resolution || '1080p',
+        fps: record.fps || 24,
+        audioTracksCount: 2,
+        audioCodec: 'AAC / 48kHz Stereo',
+        subtitleTracksCount: 0,
+        subtitleTracks: [],
+        status: record.status === 'FAILED' ? 'error' : record.status === 'ACTIVE' ? 'ready' : 'processing',
+        url: record.url || '',
+        uploadedAt: record.uploadTimestamp,
+      };
+
+      const updatedMedia = [mediaEntry, ...(currentProject.mediaFiles || []).filter(m => m.id !== record.id)];
+
+      updateCurrentProject({
+        title: record.originalName.replace(/\.[^/.]+$/, '').toUpperCase(),
+        activeMovieRecord: record,
+        videoSourceUrl: record.url,
+        mediaFiles: updatedMedia,
+        duration: record.durationFormatted || currentProject.duration,
+        durationSec: record.duration || currentProject.durationSec,
+        resolution: record.resolution || currentProject.resolution,
+        status: record.status === 'ACTIVE' ? 'ingested' : 'uploading',
+        analysisStatus: 'NOT ANALYZED',
+        scenes: [],
+        characters: [],
+      });
+
+      if (record.status === 'ACTIVE') {
+        playHudSuccess();
+        addToast('Movie Ready', 'File processed by Gemini Files API and ACTIVE for analysis', 'success');
+        addLog(`[GEMINI API] Video ACTIVE: ${record.geminiFileId}. MOVIE READY.`, 'success');
+      } else if (record.status === 'FAILED') {
+        playHudWarning();
+        addToast('Processing Error', record.errorMessage || 'Failed to process file in Gemini', 'error');
+        addLog(`[GEMINI API] File processing failed: ${record.errorMessage}`, 'error');
+      } else {
+        addToast('Gemini Processing', 'Video uploaded; Gemini is processing video stream...', 'info');
+        addLog(`[GEMINI API] File uploaded. State: ${record.status}. Polling for ACTIVE...`, 'info');
+      }
+
+      return record;
+    } catch (err: any) {
+      setIsMovieUploading(false);
+      playHudWarning();
+      addToast('Upload Error', err.message || 'File upload failed', 'error');
+      addLog(`[MOVIE PIPELINE] Upload error: ${err.message}`, 'error');
+      throw err;
+    }
+  }, [currentProject, updateCurrentProject, refreshMovieLibrary, addToast, addLog]);
+
+  const checkMovieGeminiStatus = useCallback(async (): Promise<MovieRecord | null> => {
+    const movie = currentProject.activeMovieRecord;
+    if (!movie) return null;
+    try {
+      const updated = await fetchMovieStatus(movie.id);
+      updateCurrentProject({
+        activeMovieRecord: updated,
+        status: updated.status === 'ACTIVE' ? 'ingested' : currentProject.status,
+      });
+      return updated;
+    } catch (err) {
+      console.warn('Error checking Gemini status:', err);
+      return null;
+    }
+  }, [currentProject.activeMovieRecord, currentProject.status, updateCurrentProject]);
+
+  const startAnalysisJob = useCallback(async () => {
+    const movie = currentProject.activeMovieRecord;
+    if (!movie) {
+      addToast('No Movie Found', 'Please upload a movie before starting AI analysis', 'warn');
+      return;
+    }
+    if (movie.status !== 'ACTIVE') {
+      addToast('Movie Not Ready', `Gemini is still processing video (${movie.statusMessage}). Please wait until ACTIVE.`, 'warn');
+      return;
+    }
+
+    playHudScan();
+    addToast('Starting AI Analysis', 'Triggering Gemini multimodal analysis job...', 'info');
+    addLog(`[AI CORE] Starting multimodal narrative analysis on Gemini file: ${movie.geminiFileId}`, 'ai');
+
+    try {
+      const response = await triggerAiAnalysis(movie.id, currentProject.id);
+      setActiveAnalysisJob(response.job);
+      updateCurrentProject({
+        activeJobId: response.job.id,
+        analysisStatus: 'ANALYZING...',
+        status: 'processing',
+      });
+      addToast('Analysis Job Queued', 'Gemini multimodal engine is analyzing scenes, characters, and dramatic twists', 'info');
+    } catch (err: any) {
+      playHudWarning();
+      addToast('Analysis Trigger Failed', err.message || 'Could not start analysis', 'error');
+      addLog(`[AI CORE] Error triggering analysis: ${err.message}`, 'error');
+    }
+  }, [currentProject, updateCurrentProject, addToast, addLog]);
+
+  // Polling for movie Gemini status
+  useEffect(() => {
+    const movie = currentProject.activeMovieRecord;
+    if (!movie || (movie.status !== 'PROCESSING' && movie.status !== 'GEMINI_PROCESSING' && movie.status !== 'UPLOADING')) {
+      return;
+    }
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const updated = await fetchMovieStatus(movie.id);
+        if (!isMounted) return;
+
+        if (updated.status !== movie.status || updated.statusMessage !== movie.statusMessage || updated.errorMessage !== movie.errorMessage) {
+          updateCurrentProject({
+            activeMovieRecord: updated,
+            status: updated.status === 'ACTIVE' ? 'ingested' : currentProject.status,
+          });
+
+          refreshMovieLibrary();
+
+          if (updated.status === 'ACTIVE') {
+            playHudSuccess();
+            addToast('Movie Ready', 'File is now ACTIVE in Gemini Files API and ready for AI analysis', 'success');
+            addLog(`[GEMINI API] Video ${updated.originalName} transitioned to ACTIVE. MOVIE READY.`, 'success');
+          } else if (updated.status === 'FAILED') {
+            playHudWarning();
+            addToast('Gemini Processing Failed', updated.errorMessage || 'Video processing failed', 'error');
+            addLog(`[GEMINI API] Video processing failed: ${updated.errorMessage}`, 'error');
+          }
+        }
+      } catch (err) {
+        console.warn('Polling movie error:', err);
+      }
+    }, 2500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [currentProject.activeMovieRecord, currentProject.status, updateCurrentProject, refreshMovieLibrary, addToast, addLog]);
+
+  // Polling for background analysis job
+  useEffect(() => {
+    const jobId = currentProject.activeJobId || activeAnalysisJob?.id;
+    if (!jobId) return;
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const job = await fetchAnalysisJob(jobId);
+        if (!isMounted) return;
+
+        setActiveAnalysisJob(job);
+
+        if (job.status === 'COMPLETED' && job.result) {
+          clearInterval(interval);
+          playHudSuccess();
+          addToast('Analysis Complete', 'Gemini successfully extracted cinema intelligence and story structure', 'success');
+          addLog('[AI CORE] Multimodal cinema intelligence compiled and synchronized', 'success');
+
+          const overview = job.result.overview || {};
+          const scenes = (job.result.scenes && job.result.scenes.length > 0)
+            ? job.result.scenes.map((s: any, idx: number) => ({
+                id: `scene-${String(idx + 1).padStart(3, '0')}`,
+                sceneNumber: s.sceneNumber || idx + 1,
+                title: s.title || `Scene ${idx + 1}`,
+                timestampStart: s.timestampStart || '00:00:00',
+                timestampEnd: s.timestampEnd || '00:02:00',
+                startSec: s.startSec || 0,
+                endSec: s.endSec || 120,
+                durationSec: (s.endSec || 120) - (s.startSec || 0),
+                location: s.location || 'Location',
+                timeOfDay: s.timeOfDay || 'day',
+                characters: s.characters || [],
+                dialogueLines: [],
+                audioTranscript: '',
+                keyEvent: s.keyEvent || '',
+                twistScore: s.twistScore || 50,
+                suspenseScore: s.suspenseScore || 50,
+                emotionalScore: s.emotionalScore || 50,
+                visualSummary: s.visualSummary || '',
+                tags: s.tags || [],
+                importanceScore: s.importanceScore || 75,
+                isCandidateForCut: true,
+                isLocked: false,
+                isExcluded: false,
+              }))
+            : currentProject.scenes;
+
+          const characters = (job.result.characters && job.result.characters.length > 0)
+            ? job.result.characters.map((c: any, idx: number) => ({
+                id: c.id || `char-${idx + 1}`,
+                name: c.name || `Character ${idx + 1}`,
+                actor: c.actor || 'Actor',
+                role: c.role || 'supporting',
+                archetype: c.archetype || 'Key Figure',
+                confidence: c.confidence || 95,
+                screenTimeMinutes: c.screenTimeMinutes || 15,
+                description: c.description || '',
+                relationships: [],
+              }))
+            : currentProject.characters;
+
+          const events = job.result.events || currentProject.events || [];
+          const twists = job.result.twists || currentProject.twists || [];
+          const suspensePoints = job.result.suspensePoints || currentProject.suspensePoints || [];
+          const emotionalMoments = job.result.emotionalMoments || currentProject.emotionalMoments || [];
+          const score = job.result.analysisScore || {};
+
+          updateCurrentProject({
+            title: overview.title || currentProject.title,
+            synopsis: overview.synopsis || currentProject.synopsis,
+            director: overview.director || currentProject.director,
+            year: overview.year || currentProject.year,
+            genre: overview.genre || currentProject.genre,
+            storyPotentialScore: overview.storyPotentialScore || 92,
+            analysisStatus: 'ANALYSIS COMPLETE',
+            status: 'analyzed',
+            scenes,
+            characters,
+            events,
+            twists,
+            suspensePoints,
+            emotionalMoments,
+            analysis: {
+              ...currentProject.analysis,
+              overallScore: score.overallScore || 92,
+              charactersCount: characters.length,
+              keyEventsCount: events.length,
+              twistsCount: twists.length,
+              suspensePointsCount: suspensePoints.length,
+              emotionalMomentsCount: emotionalMoments.length,
+              pacingScore: score.pacingScore || 88,
+              continuityScore: score.continuityScore || 92,
+            },
+            activeJobId: undefined,
+          });
+        } else if (job.status === 'FAILED') {
+          clearInterval(interval);
+          playHudWarning();
+          addToast('Analysis Job Failed', job.error || 'Gemini analysis failed', 'error');
+          addLog(`[AI CORE] Analysis job failed: ${job.error}`, 'error');
+          updateCurrentProject({
+            analysisStatus: 'NOT ANALYZED',
+            activeJobId: undefined,
+          });
+        }
+      } catch (err) {
+        console.warn('Polling analysis job error:', err);
+      }
+    }, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [currentProject.activeJobId, activeAnalysisJob?.id, currentProject.scenes, currentProject.characters, currentProject.events, currentProject.twists, currentProject.suspensePoints, currentProject.emotionalMoments, currentProject.analysis, currentProject.title, currentProject.synopsis, currentProject.director, currentProject.year, currentProject.genre, updateCurrentProject, addToast, addLog]);
 
   // Auth methods
   const loginWithGoogle = useCallback(() => {
@@ -980,6 +1398,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCurrentProjectId,
         createProject,
         updateCurrentProject,
+        activeMovieRecord: currentProject.activeMovieRecord,
+        activeAnalysisJob,
+        isMovieUploading,
+        movieUploadProgress,
+        uploadMovie,
+        startAnalysisJob,
+        checkMovieGeminiStatus,
+        isIngestionCenterOpen,
+        setIsIngestionCenterOpen,
+        movieLibraryList,
+        refreshMovieLibrary,
+        selectMovieFromLibrary,
+        deleteMovie,
         selectedSegmentId,
         setSelectedSegmentId,
         selectedSceneId,
@@ -1030,6 +1461,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isMobileSidebarOpen,
         toggleMobileSidebar,
         setIsMobileSidebarOpen,
+        eyeConfig,
+        updateEyeConfig,
+        resetEyeConfig,
+        saveEyeConfig,
+        importEyeConfig,
+        exportEyeConfig,
+        devilEyeState,
+        setDevilEyeStateOverride: setEyeStateOverride,
+        isLoginModalOpen,
+        setIsLoginModalOpen,
       }}
     >
       {children}

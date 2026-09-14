@@ -6,6 +6,7 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
 import { PageId } from '../../types';
+import { DevilEye } from './DevilEye';
 import {
   LayoutDashboard,
   Film,
@@ -25,6 +26,7 @@ import {
   Layers,
   Settings,
   Eye,
+  Download,
   ChevronRight,
   X
 } from 'lucide-react';
@@ -53,6 +55,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'content-planner', label: 'Content Planner', icon: Calendar },
   { id: 'web-series', label: 'Web Series', icon: Layers },
+  { id: 'eye-control', label: 'Eye Control', icon: Eye, tag: 'CORE' },
+  { id: 'export', label: 'Export Master', icon: Download, tag: '4K/8K' },
   { id: 'settings', label: 'Settings & Core', icon: Settings },
 ];
 
@@ -81,10 +85,7 @@ export const Sidebar: React.FC = () => {
         <div>
           <div className="px-3 py-3.5 border-b border-cyan-500/15 flex items-center justify-between">
             <div className="flex items-center space-x-2.5">
-              <div className="relative w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-600/30 border border-cyan-400/60 flex items-center justify-center shadow-[0_0_15px_rgba(0,240,255,0.25)]">
-                <Eye className="w-4 h-4 text-cyan-300 animate-pulse" />
-                <div className="absolute inset-0 rounded-lg border border-cyan-300/40 animate-ping opacity-20 pointer-events-none" />
-              </div>
+              <DevilEye size="sm" state="WATCHING" interactive={true} />
               <div>
                 <div className="text-[13px] font-display font-bold tracking-wider text-cyan-200">
                   THE DEVIL'S EYE

@@ -11,6 +11,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { DevilEye, DevilEyeState } from '../components/common/DevilEye';
 import { 
   Play, 
   Pause, 
@@ -27,6 +28,7 @@ import {
   Terminal as TerminalIcon,
   ChevronRight,
   DownloadCloud,
+  UploadCloud,
   FileText,
   User,
   Layers,
@@ -42,7 +44,13 @@ export const CommandCenter: React.FC = () => {
     isAiThinking, 
     systemLogs, 
     navigateTo, 
-    setIsExportModalOpen 
+    setIsExportModalOpen,
+    activeMovieRecord,
+    activeAnalysisJob,
+    startAnalysisJob,
+    isMovieUploading,
+    movieUploadProgress,
+    setIsIngestionCenterOpen,
   } = useApp();
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -117,13 +125,29 @@ export const CommandCenter: React.FC = () => {
     ) || currentProject.scenes[0];
   }, [currentProject.scenes, playbackTime]);
 
+  // Derive real-time Devil's Eye state strictly from active job/movie telemetry
+  const eyeState: DevilEyeState = useMemo(() => {
+    if (activeAnalysisJob?.status === 'RUNNING') return 'ANALYZING';
+    if (activeAnalysisJob?.status === 'FAILED') return 'ERROR';
+    if (activeMovieRecord?.status === 'FAILED') return 'ERROR';
+    if (isAiThinking) return 'THINKING';
+    if (activeMovieRecord?.status === 'UPLOADING' || activeMovieRecord?.status === 'PROCESSING' || activeMovieRecord?.status === 'GEMINI_PROCESSING') return 'PROCESSING';
+    if (activeMovieRecord?.geminiFileState === 'ACTIVE' && !activeAnalysisJob) return 'FOCUS';
+    if (currentProject.analysisStatus === 'ANALYSIS COMPLETE') return 'WATCHING';
+    return 'IDLE';
+  }, [activeAnalysisJob, activeMovieRecord, isAiThinking, currentProject.analysisStatus]);
+
   // State checks for pipeline verification (Phase 2 real logic)
-  const isAnalyzed = currentProject.analysisStatus === 'ANALYSIS COMPLETE';
-  const isAnalyzing = currentProject.analysisStatus === 'ANALYZING';
+  const isAnalyzed = currentProject.analysisStatus === 'ANALYSIS COMPLETE' || activeAnalysisJob?.status === 'COMPLETED';
+  const isAnalyzing = (currentProject.analysisStatus as string) === 'ANALYZING' || activeAnalysisJob?.status === 'RUNNING' || activeAnalysisJob?.status === 'QUEUED';
+  const isGeminiProcessing = activeMovieRecord?.status === 'PROCESSING' || activeMovieRecord?.status === 'GEMINI_PROCESSING';
+  const isGeminiActive = activeMovieRecord?.status === 'ACTIVE';
+  const isGeminiFailed = activeMovieRecord?.status === 'FAILED';
   const hasVideo = Boolean(
     currentProject.videoSourceUrl || 
     (currentProject.mediaFiles && currentProject.mediaFiles.some(f => f.type === 'video')) || 
-    (currentProject.durationSec && currentProject.durationSec > 0)
+    (currentProject.durationSec && currentProject.durationSec > 0) ||
+    activeMovieRecord
   );
   const hasAudio = Boolean(
     currentProject.mediaFiles?.some(f => f.type === 'audio' || (f.type === 'video' && (f.audioTracksCount || 0) > 0)) || 
@@ -164,11 +188,27 @@ export const CommandCenter: React.FC = () => {
                 <span className="tracking-wider truncate">MOVIE SOURCE</span>
               </div>
               <span className={`text-[10px] font-mono uppercase px-1.5 py-0.2 rounded border ${
-                hasVideo 
-                  ? 'text-cyan-300 bg-cyan-950/60 border-cyan-500/40' 
+                isGeminiActive
+                  ? 'text-emerald-300 bg-emerald-950/60 border-emerald-500/40'
+                  : isGeminiProcessing || isMovieUploading
+                  ? 'text-cyan-300 bg-cyan-950/60 border-cyan-500/40 animate-pulse'
+                  : isGeminiFailed
+                  ? 'text-rose-300 bg-rose-950/60 border-rose-500/40'
+                  : hasVideo
+                  ? 'text-cyan-300 bg-cyan-950/60 border-cyan-500/40'
                   : 'text-amber-300 bg-amber-950/60 border-amber-500/40'
               }`}>
-                {hasVideo ? 'INGEST // OK' : 'INGEST // PENDING'}
+                {isGeminiActive
+                  ? 'MOVIE READY'
+                  : isGeminiProcessing
+                  ? 'PROCESSING'
+                  : isMovieUploading
+                  ? 'UPLOADING'
+                  : isGeminiFailed
+                  ? 'FAILED'
+                  : hasVideo
+                  ? 'INGEST // OK'
+                  : 'NO MOVIE'}
               </span>
             </div>
 
@@ -186,10 +226,11 @@ export const CommandCenter: React.FC = () => {
               </div>
 
               <div className="flex-1 min-w-0 space-y-1.5 text-xs">
-                <div className="font-tech font-bold text-slate-100 truncate text-sm" title={currentProject.title}>
-                  {currentProject.videoSourceUrl || `${currentProject.title.toLowerCase().replace(/\s+/g, '_')}.mp4`}
+                <div className="font-tech font-bold text-slate-100 truncate text-sm" title={activeMovieRecord?.originalName || currentProject.title}>
+                  {activeMovieRecord?.originalName || currentProject.videoSourceUrl || `${currentProject.title.toLowerCase().replace(/\s+/g, '_')}.mp4`}
                 </div>
                 <div className="text-[11px] font-mono text-cyan-400/80 truncate">
+                  {activeMovieRecord?.fileSizeFormatted ? `${activeMovieRecord.fileSizeFormatted} • ` : ''}
                   {currentProject.duration || formatTime(currentProject.durationSec || 0)} • {currentProject.resolution || '1080p 24fps'}
                 </div>
                 <div className="flex flex-wrap gap-1">
@@ -207,16 +248,73 @@ export const CommandCenter: React.FC = () => {
                     </span>
                   ) : isAnalyzing ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-tech text-amber-400 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded animate-pulse">
-                      <Clock className="w-3 h-3 shrink-0" />
-                      <span>ANALYZING...</span>
+                      <Clock className="w-3 h-3 shrink-0 animate-spin" />
+                      <span>{activeAnalysisJob?.currentStep || 'ANALYZING WITH GEMINI...'}</span>
+                    </span>
+                  ) : isGeminiProcessing ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-tech text-cyan-400 bg-cyan-950/60 border border-cyan-500/40 px-2 py-0.5 rounded animate-pulse">
+                      <Clock className="w-3 h-3 shrink-0 animate-spin" />
+                      <span>GEMINI PROCESSING VIDEO...</span>
+                    </span>
+                  ) : isMovieUploading ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-tech text-amber-400 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded animate-pulse">
+                      <Clock className="w-3 h-3 shrink-0 animate-spin" />
+                      <span>UPLOADING {movieUploadProgress}%</span>
+                    </span>
+                  ) : isGeminiFailed ? (
+                    <div className="space-y-1">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-tech text-rose-400 bg-rose-950/60 border border-rose-500/40 px-2 py-0.5 rounded">
+                        <AlertCircle className="w-3 h-3 shrink-0" />
+                        <span>INGESTION FAILED</span>
+                      </span>
+                      <div className="text-[10px] text-rose-300 font-mono line-clamp-2">
+                        {activeMovieRecord?.errorMessage || 'Failed processing video in Gemini'}
+                      </div>
+                    </div>
+                  ) : isGeminiActive ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-tech text-emerald-300 bg-emerald-950/60 border border-emerald-500/40 px-2 py-0.5 rounded">
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
+                      <span>MOVIE READY (GEMINI ACTIVE)</span>
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 text-[10px] font-tech text-slate-400 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded">
                       <AlertCircle className="w-3 h-3 shrink-0" />
-                      <span>NOT ANALYZED</span>
+                      <span>NO ANALYZED MOVIE AVAILABLE</span>
                     </span>
                   )}
                 </div>
+
+                {isGeminiActive && !isAnalyzed && !isAnalyzing && (
+                  <button
+                    onClick={async () => {
+                      playHudClick();
+                      await startAnalysisJob();
+                    }}
+                    className="w-full mt-1.5 py-1 px-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 border border-emerald-400/50 rounded text-[10px] font-tech font-bold text-white shadow-[0_0_10px_rgba(16,185,129,0.3)] flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Sparkles className="w-3 h-3 animate-pulse" />
+                    <span>START AI ANALYSIS (GEMINI)</span>
+                  </button>
+                )}
+
+                {isGeminiProcessing && (
+                  <div className="w-full mt-1.5 py-1 px-2 bg-cyan-950/60 border border-cyan-500/30 rounded text-[9.5px] font-mono text-cyan-300 flex items-center justify-center gap-1">
+                    <Clock className="w-3 h-3 text-cyan-400 animate-spin" />
+                    <span>POLLING GEMINI (WAITING FOR ACTIVE)...</span>
+                  </div>
+                )}
+
+                {/* Direct Trigger to Ingestion Center */}
+                <button
+                  onClick={() => {
+                    playHudClick();
+                    setIsIngestionCenterOpen(true);
+                  }}
+                  className="w-full mt-2 py-1.5 px-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 rounded text-[10px] font-tech font-bold text-cyan-200 flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-[0_0_10px_rgba(0,240,255,0.15)]"
+                >
+                  <UploadCloud className="w-3.5 h-3.5 text-cyan-300" />
+                  <span>INGEST / UPLOAD REAL MOVIE</span>
+                </button>
               </div>
             </div>
 
@@ -392,43 +490,55 @@ export const CommandCenter: React.FC = () => {
                 <span className="tracking-wider">AI ANALYSIS</span>
               </div>
               <span className="text-[10px] font-mono text-cyan-400/80">
-                SCORE // {isAnalyzed ? `${currentProject.analysis?.overallScore || 0}%` : 'PENDING'}
+                SCORE // {isAnalyzed ? `${currentProject.analysis?.overallScore || 0}%` : isAnalyzing ? 'ANALYZING...' : 'PENDING'}
               </span>
             </div>
 
-            {/* Circular Overall Score Dial */}
-            <div className="relative w-28 h-28 mx-auto my-2">
-              <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="40"
-                  className="stroke-slate-800"
-                  strokeWidth="8"
-                  fill="transparent"
-                />
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="40"
-                  className="stroke-cyan-400 transition-all duration-1000"
-                  strokeWidth="8"
-                  strokeDasharray={`${2 * Math.PI * 40}`}
-                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - (isAnalyzed ? (currentProject.analysis?.overallScore || 0) : 0) / 100)}`}
-                  strokeLinecap="round"
-                  fill="transparent"
-                  style={{ filter: 'drop-shadow(0 0 6px rgba(0, 240, 255, 0.6))' }}
-                />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                <span className="text-2xl font-display font-black text-cyan-200">
-                  {isAnalyzed ? `${currentProject.analysis?.overallScore || 0}%` : '--'}
+            {/* Devil's Eye Central AI Core Visualizer */}
+            <div 
+              onClick={() => navigateTo('eye-control')}
+              className="flex flex-col items-center justify-center my-3 cursor-pointer group"
+              title="Click to configure The Devil's Eye"
+            >
+              <DevilEye 
+                size="md" 
+                state={eyeState} 
+                interactive={true} 
+                className="mx-auto group-hover:scale-105 transition-transform" 
+              />
+              <div className="mt-2 text-center">
+                <span className={`text-xl font-display font-black ${isAnalyzing ? 'text-amber-300 animate-pulse' : 'text-cyan-200'}`}>
+                  {isAnalyzed ? `${currentProject.analysis?.overallScore || 0}%` : isAnalyzing ? 'ANALYZING' : '--'}
                 </span>
-                <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest">
-                  {isAnalyzed ? 'OVERALL SCORE' : 'NOT ANALYZED'}
+                <span className="block text-[9px] font-mono text-slate-400 uppercase tracking-widest group-hover:text-cyan-300 transition-colors">
+                  {isAnalyzed ? 'OVERALL SCORE • EYE ACTIVE' : isAnalyzing ? 'ANALYSIS IN PROGRESS' : 'CLICK TO CONFIGURE EYE'}
                 </span>
               </div>
             </div>
+
+            {isGeminiActive && !isAnalyzed && !isAnalyzing && (
+              <div className="mb-2">
+                <button
+                  onClick={async () => {
+                    playHudClick();
+                    await startAnalysisJob();
+                  }}
+                  className="w-full py-1.5 px-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 border border-emerald-400/50 rounded text-xs font-tech font-bold text-white shadow-[0_0_12px_rgba(16,185,129,0.4)] flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+                  <span>START AI ANALYSIS</span>
+                </button>
+              </div>
+            )}
+
+            {isAnalyzing && (
+              <div className="mb-2 p-1.5 rounded bg-amber-950/40 border border-amber-500/30 text-center">
+                <div className="text-[10px] font-mono text-amber-300 flex items-center justify-center gap-1">
+                  <Clock className="w-3 h-3 animate-spin shrink-0 text-amber-400" />
+                  <span className="truncate">{activeAnalysisJob?.currentStep || 'Gemini analyzing scenes & characters...'}</span>
+                </div>
+              </div>
+            )}
 
             {/* Key Metrics Breakdown */}
             <div className="space-y-1.5 text-xs pt-2">
@@ -522,7 +632,7 @@ export const CommandCenter: React.FC = () => {
               </span>
             </div>
             <div className="grid grid-cols-4 gap-1">
-              {(currentProject.scenes && currentProject.scenes.length >= 4) ? (
+              {(currentProject.scenes && currentProject.scenes.length > 0) ? (
                 currentProject.scenes.slice(0, 4).map((s, idx) => (
                   <div key={idx} className="bg-[#050b18] border border-cyan-500/30 rounded p-1 text-center">
                     <div className="text-[8.5px] font-mono text-slate-400">Sc {String(s.sceneNumber).padStart(3, '0')}</div>
@@ -530,17 +640,9 @@ export const CommandCenter: React.FC = () => {
                   </div>
                 ))
               ) : (
-                [
-                  { sc: '001', conf: '94%' },
-                  { sc: '002', conf: '88%' },
-                  { sc: '003', conf: '76%' },
-                  { sc: '004', conf: '62%' },
-                ].map((f, idx) => (
-                  <div key={idx} className="bg-[#050b18] border border-cyan-500/30 rounded p-1 text-center">
-                    <div className="text-[8.5px] font-mono text-slate-400">Sc {f.sc}</div>
-                    <div className="text-[9.5px] font-mono font-bold text-cyan-300">{f.conf}</div>
-                  </div>
-                ))
+                <div className="col-span-4 py-2 text-center text-[10px] font-mono text-slate-500 bg-[#050b18] border border-slate-800 rounded">
+                  NO SCENES ANALYZED YET
+                </div>
               )}
             </div>
           </div>
@@ -955,12 +1057,12 @@ export const CommandCenter: React.FC = () => {
             <button
               onClick={() => {
                 playHudClick();
-                setIsExportModalOpen(true);
+                navigateTo('export');
               }}
-              className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-tech font-bold text-xs py-2 rounded border border-cyan-400/50 shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center justify-center space-x-2 cursor-pointer"
+              className="w-full bg-gradient-to-r from-red-600 via-rose-600 to-cyan-600 hover:from-red-500 hover:to-cyan-500 text-white font-tech font-bold text-xs py-2 rounded border border-red-400/50 shadow-[0_0_15px_rgba(239,68,68,0.4)] flex items-center justify-center space-x-2 cursor-pointer transition-all"
             >
               <DownloadCloud className="w-4 h-4" />
-              <span>EXPORT PROJECT PIPELINE</span>
+              <span>EXPORT PRODUCTION MASTER</span>
             </button>
 
             <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
@@ -975,14 +1077,20 @@ export const CommandCenter: React.FC = () => {
       {/* TIER 5: JARVIS AI ASSISTANT COMMAND CONSOLE BAR */}
       <div className="hud-panel rounded-lg p-3 border border-cyan-500/40 hud-corners flex flex-col md:flex-row items-center justify-between gap-3 shadow-[0_0_20px_rgba(0,240,255,0.08)]">
         {/* Left: AI Core indicator */}
-        <div className="flex items-center space-x-3 shrink-0">
-          <div className="relative w-9 h-9 rounded-full bg-cyan-950/80 border border-cyan-400/70 flex items-center justify-center shadow-[0_0_10px_rgba(0,240,255,0.3)]">
-            <Sparkles className="w-4 h-4 text-cyan-300 animate-spin" />
-          </div>
+        <div 
+          onClick={() => navigateTo('eye-control')}
+          className="flex items-center space-x-3 shrink-0 cursor-pointer group"
+          title="Open Devil's Eye Control Center"
+        >
+          <DevilEye 
+            size="sm" 
+            state={eyeState} 
+            interactive={true} 
+          />
           <div>
-            <div className="text-xs font-tech font-bold text-cyan-200">AI EDITOR ASSISTANT</div>
+            <div className="text-xs font-tech font-bold text-cyan-200 group-hover:text-red-400 transition-colors">THE DEVIL'S EYE AI</div>
             <div className="text-[10px] font-mono text-slate-400">
-              {isAiThinking ? 'SYNTHESIZING DIRECTIVE...' : 'AWAITING YOUR CINEMA COMMAND'}
+              {isAiThinking ? 'SYNTHESIZING DIRECTIVE...' : 'AWAITING YOUR CINEMA COMMAND • CONFIGURE'}
             </div>
           </div>
         </div>

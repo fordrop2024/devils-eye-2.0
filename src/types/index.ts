@@ -31,6 +31,61 @@ export interface MediaAsset {
   uploadedAt: string;
 }
 
+export type MovieState = 'UPLOADING' | 'PROCESSING' | 'ACTIVE' | 'FAILED' | 'UPLOADED' | 'GEMINI_PROCESSING';
+export type AnalysisJobState = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+
+export interface MovieRecord {
+  id: string;
+  projectId?: string;
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+  fileSizeFormatted: string;
+  duration?: number;
+  durationFormatted?: string;
+  resolution?: string;
+  fps?: number;
+  uploadTimestamp: string;
+  status: MovieState;
+  statusMessage: string;
+  geminiFileId?: string;
+  geminiFileUri?: string;
+  geminiFileState?: 'STATE_UNSPECIFIED' | 'PROCESSING' | 'ACTIVE' | 'FAILED';
+  errorMessage?: string;
+  localPath?: string;
+  url?: string;
+}
+
+export interface AnalysisJob {
+  id: string;
+  movieId: string;
+  projectId?: string;
+  status: AnalysisJobState;
+  progressPercent: number;
+  currentStep: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+  result?: {
+    overview?: {
+      title?: string;
+      synopsis?: string;
+      genre?: string[];
+      director?: string;
+      year?: number;
+      storyPotentialScore?: number;
+    };
+    scenes?: Scene[];
+    characters?: Character[];
+    events?: KeyEvent[];
+    twists?: TwistPoint[];
+    suspensePoints?: SuspensePoint[];
+    emotionalMoments?: EmotionalMoment[];
+    analysisScore?: Record<string, any>;
+  };
+}
+
 export interface MediaFileRecord {
   id: string;
   name: string;
@@ -249,6 +304,192 @@ export interface GraphEdge {
   details?: string;
 }
 
+// ==========================================
+// CENTRAL MOVIE INTELLIGENCE DATA STRUCTURE
+// 23 Comprehensive Narrative & Audio Elements
+// ==========================================
+
+export interface CharacterAppearance {
+  sceneId: string;
+  sceneNumber: number;
+  timestamp: string;
+  timeSec: number;
+  significance: string;
+}
+
+export interface CharacterDetail extends Character {
+  appearances?: CharacterAppearance[];
+  firstAppearance?: string;
+  firstAppearanceSceneId?: string;
+  firstAppearanceSceneNumber?: number;
+  importantAppearances?: CharacterAppearance[];
+  motivations?: string;
+  goals?: string;
+  conflicts?: string[];
+  characterDevelopment?: string;
+  characterArc?: string;
+  importantScenes?: { sceneId: string; sceneNumber: number; timestamp: string; note: string }[];
+  sourceTimestamps?: string[];
+}
+
+export interface CinemaConflict {
+  id: string;
+  parties: string[];
+  stakes: string;
+  nature: 'Interpersonal' | 'Psychological' | 'Ideological' | 'Physical' | 'Cosmic';
+  intensity: number; // 0 - 100
+  resolutionStatus: 'Unresolved' | 'Escalating' | 'Resolved' | 'Tragic';
+  sceneId?: string;
+  timestamp?: string;
+}
+
+export interface NarrativeClue {
+  id: string;
+  timestamp: string;
+  timeSec: number;
+  detail: string;
+  meaning: string;
+  payoffScene?: string;
+  subtletyScore: number; // 0 - 100
+}
+
+export interface CinemaMystery {
+  id: string;
+  question: string;
+  cluesDetected: string[];
+  status: 'Open' | 'Partially Revealed' | 'Twist Solved' | 'Ambiguous';
+  dramaticImpact: number;
+}
+
+export interface DialogueQuote {
+  id: string;
+  timestamp: string;
+  timeSec: number;
+  speaker: string;
+  listener?: string;
+  quote: string;
+  context: string;
+  subtext?: string;
+  sceneId?: string;
+}
+
+export interface MusicItem {
+  id: string;
+  title: string;
+  genre: string;
+  mood: string;
+  motif?: string;
+  timestamp: string;
+  timeSec: number;
+}
+
+export interface SongItem {
+  id: string;
+  title: string;
+  artist?: string;
+  mood: string;
+  timestamp: string;
+  timeSec: number;
+}
+
+export interface SfxItem {
+  id: string;
+  name: string;
+  type: string;
+  timestamp: string;
+  timeSec: number;
+  intensity: number;
+}
+
+export interface AmbienceItem {
+  id: string;
+  type: string;
+  description: string;
+  sceneId?: string;
+  timestamp: string;
+  timeSec: number;
+}
+
+export interface NarrativeClimax {
+  timestampStart: string;
+  timestampEnd: string;
+  startSec: number;
+  endSec: number;
+  peakMoment: string;
+  resolution: string;
+  catharsisScore: number;
+}
+
+export interface NarrativeEnding {
+  type: 'Tragic' | 'Triumphant' | 'Ambiguous' | 'Twist' | 'Open-Ended';
+  resolutionNotes: string;
+  thematicClosure: string;
+  finalImage: string;
+  timestamp: string;
+  timeSec: number;
+}
+
+export interface MovieIntelligenceData {
+  movieId: string;
+  projectTitle: string;
+  analyzedAt: string;
+  // 1. Scenes
+  scenes: Scene[];
+  // 2-3. Scene start/end timestamps & descriptions included in scenes
+  // 4. Characters
+  characters: CharacterDetail[];
+  // 5. Character appearances included in characters[].appearances
+  // 6. Character relationships
+  relationships: {
+    characterA: string;
+    characterB: string;
+    dynamic: string;
+    tension: number;
+    subconsciousSecret?: string;
+  }[];
+  // 7. Locations
+  locations: CinemaLocation[];
+  // 8. Events
+  events: KeyEvent[];
+  // 9. Important objects
+  importantObjects: CinemaObject[];
+  // 10. Conflicts
+  conflicts: CinemaConflict[];
+  // 11. Clues
+  clues: NarrativeClue[];
+  // 12. Mysteries
+  mysteries: CinemaMystery[];
+  // 13. Suspense points
+  suspensePoints: SuspensePoint[];
+  // 14. Twists
+  twists: TwistPoint[];
+  // 15. Action moments
+  actionMoments: ActionSequence[];
+  // 16. Emotional moments
+  emotionalMoments: EmotionalMoment[];
+  // 17. Important dialogue
+  importantDialogue: DialogueQuote[];
+  // 18. Music
+  music: MusicItem[];
+  // 19. Songs
+  songs: SongItem[];
+  // 20. SFX
+  sfx: SfxItem[];
+  // 21. Ambience
+  ambience: AmbienceItem[];
+  // 22. Climax
+  climax?: NarrativeClimax;
+  // 23. Ending
+  ending?: NarrativeEnding;
+  timelineOverview?: {
+    totalDuration: string;
+    totalDurationSec: number;
+    scenesCount: number;
+    charactersCount: number;
+    twistsCount: number;
+  };
+}
+
 export interface StoryGraphNode {
   id: string;
   label: string;
@@ -261,47 +502,56 @@ export interface StoryGraphNode {
 
 export type NarrativeStage = 
   | 'HOOK'
+  | 'CENTRAL QUESTION / CURIOSITY'
   | 'MYSTERY / QUESTION'
   | 'CHARACTER INTRODUCTION'
+  | 'INCITING EVENT'
   | 'IMPORTANT EVENT'
+  | 'CLUES'
   | 'CLUE'
+  | 'RISING TENSION'
   | 'TENSION'
   | 'ESCALATION'
   | 'ACTION / EMOTION'
   | 'NEW QUESTION'
+  | 'TWIST / REVELATION'
   | 'TWIST'
   | 'CLIMAX'
+  | 'FINAL REVEAL'
   | 'REVEAL'
   | 'ENDING';
 
 export const NARRATIVE_STAGES_SEQUENCE: NarrativeStage[] = [
   'HOOK',
-  'MYSTERY / QUESTION',
+  'CENTRAL QUESTION / CURIOSITY',
   'CHARACTER INTRODUCTION',
-  'IMPORTANT EVENT',
-  'CLUE',
-  'TENSION',
+  'INCITING EVENT',
+  'CLUES',
+  'RISING TENSION',
   'ESCALATION',
   'ACTION / EMOTION',
   'NEW QUESTION',
-  'TWIST',
+  'TWIST / REVELATION',
   'CLIMAX',
-  'REVEAL',
+  'FINAL REVEAL',
   'ENDING'
 ];
 
 export type ExplainerGenre = 
+  | 'Action'
   | 'Thriller'
   | 'Mystery'
-  | 'Horror'
   | 'Crime'
-  | 'Action'
-  | 'Romance'
+  | 'Horror'
   | 'Psychological'
   | 'Sci-Fi'
   | 'Drama'
   | 'Comedy'
-  | 'Adventure';
+  | 'Romance'
+  | 'Documentary'
+  | 'True Crime'
+  | 'Adventure'
+  | 'Fantasy';
 
 export type ExplainerLanguage = 'Hindi' | 'Hinglish' | 'English';
 
@@ -309,6 +559,19 @@ export interface WordTiming {
   word: string;
   startSec: number;
   endSec: number;
+}
+
+export interface StoryBeatSourceMapping {
+  sceneId: string;
+  sceneNumber: number;
+  sceneTitle: string;
+  startTimestamp: string;
+  endTimestamp: string;
+  startSec: number;
+  endSec: number;
+  charactersInvolved: string[];
+  event: string;
+  importanceScore: number;
 }
 
 export interface StoryBeat {
@@ -335,6 +598,24 @@ export interface StoryBeat {
   targetWords?: number;
   informationWithheld?: string;
   visualCues?: string;
+  beatNumber?: number;
+  narrationGoal?: string;
+  isKeyTwist?: boolean;
+  notes?: string;
+  matchedSceneId?: string;
+  sceneDescription?: string;
+  durationTargetSec?: number;
+
+  // Source Mapping
+  sourceMapping?: StoryBeatSourceMapping;
+  sourceStartTimestamp?: string;
+  sourceEndTimestamp?: string;
+  sourceStartSec?: number;
+  sourceEndSec?: number;
+  sourceSceneNumber?: number;
+  charactersInvolved?: string[];
+  event?: string;
+  importanceScore?: number;
 }
 
 export interface StoryVersion {
@@ -370,6 +651,9 @@ export interface StoryEngineConfig {
   language: ExplainerLanguage;
   delayInformationStrategy: boolean;
   storytellingStrategy: any;
+  targetAudience?: string;
+  pacing?: string;
+  hookStrategy?: string;
 }
 
 export interface MasterNarratorProfile {
@@ -516,19 +800,30 @@ export interface ScriptSegment {
   isAiRecommendedAccepted?: boolean;
   generationStatus?: 'unconfigured' | 'pending' | 'generating' | 'ready' | 'error';
   generationError?: string;
+  segmentIndex?: number;
+  startTime?: string;
+  endTime?: string;
+  durationSec?: number;
+  narrationText?: string;
+  suggestedVisual?: string;
+  emotionTone?: string;
+  soundCue?: string;
+  sceneId?: string;
 }
 
 export interface Script {
   id: string;
+  title?: string;
   projectId: string;
   language?: ExplainerLanguage;
   targetDuration?: string; // "20 min"
   targetDurationSec: number;
   targetWords?: number;
   estimatedNarrationDuration?: string;
-  actualDurationSec: number;
+  estimatedNarrationSec?: number;
+  actualDurationSec?: number;
   wordsCount: number;
-  readingSpeedWpm: number;
+  readingSpeedWpm?: number;
   segments: ScriptSegment[];
 }
 
@@ -558,11 +853,17 @@ export interface Clip {
   id: string;
   trackId: string;
   title: string;
+  name?: string;
   startTime: number; // in seconds on the timeline
   duration: number; // in seconds
+  startSec?: number;
+  durationSec?: number;
   sourceStart: number;
   sourceEnd: number;
+  sourceStartSec?: number;
+  sourceDurationSec?: number;
   mediaType: 'video' | 'narration' | 'dialogue' | 'sfx' | 'music' | 'subtitles';
+  type?: string;
   color: string;
   waveform?: number[];
   thumbnail?: string;
@@ -611,16 +912,21 @@ export interface Clip {
   animationPreset?: 'fade' | 'pop' | 'typewriter' | 'karaoke';
 }
 
+export type TimelineClip = Clip;
+
 export interface TimelineTrack {
   id: string;
   name: string;
-  type: 'video' | 'narration' | 'dialogue' | 'sfx' | 'music' | 'subtitles';
-  muted: boolean;
-  solo: boolean;
-  locked: boolean;
+  type: 'video' | 'narration' | 'dialogue' | 'sfx' | 'music' | 'subtitles' | 'audio' | 'text';
+  muted?: boolean;
+  isMuted?: boolean;
+  solo?: boolean;
+  isSolo?: boolean;
+  locked?: boolean;
+  isLocked?: boolean;
   visible?: boolean;
   color?: string;
-  volume: number; // 0 - 100
+  volume?: number; // 0 - 100
   clips: Clip[];
 }
 
@@ -636,9 +942,13 @@ export interface TimelineVersion {
 
 export interface Timeline {
   id: string;
+  name?: string;
   projectId: string;
   totalDuration: number; // in seconds
+  durationSec?: number;
   currentTime: number;
+  playheadSec?: number;
+  fps?: number;
   isPlaying: boolean;
   zoomLevel: number; // 1 - 10
   snapEnabled?: boolean;
@@ -656,6 +966,8 @@ export interface Subtitle {
   endTime: string;
   startSec: number;
   endSec: number;
+  startTimeSec?: number;
+  endTimeSec?: number;
   text: string;
   speaker?: string;
   confidence: number;
@@ -776,6 +1088,7 @@ export interface BrowserExportCapability {
 }
 
 export interface ExportSettingsConfig {
+  format?: 'mp4' | 'webm';
   resolution: '720p (1280x720)' | '1080p (1920x1080)' | '1440p (2560x1440)' | '4K UHD (3840x2160)' | 'Shorts (1080x1920)';
   aspectRatio: '16:9' | '9:16';
   fps: 24 | 30 | 60;
@@ -833,8 +1146,11 @@ export interface Project {
   analysisStatus?: AnalysisStatus;
   storyPotentialScore?: number; // e.g. 94
   analysis: AnalysisResult;
+  movieIntelligence?: MovieIntelligenceData;
   sourceRange?: SourceRangeConfig;
   mediaFiles?: MediaFileRecord[];
+  activeMovieRecord?: MovieRecord;
+  activeJobId?: string;
   scenes: Scene[];
   characters: Character[];
   events?: KeyEvent[];
@@ -849,6 +1165,8 @@ export interface Project {
   knowledgeGraphEdges?: GraphEdge[];
   storyGraph: StoryGraphNode[];
   storyConfig?: StoryEngineConfig;
+  storyStatus?: 'NOT ANALYZED' | 'ANALYSIS READY' | 'STORY GENERATING' | 'STORY READY' | 'STORY FAILED';
+  storyError?: string;
   storyBeats?: StoryBeat[];
   storyVersions?: StoryVersion[];
   scriptVersions?: ScriptVersion[];
@@ -884,6 +1202,55 @@ export interface SystemLog {
   message: string;
 }
 
+export type EyeColorPreset = 'red' | 'blue' | 'green' | 'purple' | 'white' | 'cyan' | 'orange' | 'custom';
+export type EyeResponseMode = 'reactive' | 'fixed' | 'scanning' | 'hypnotic';
+
+export interface EyeStateConfig {
+  glowColor?: string;
+  borderColor?: string;
+  badgeBg?: string;
+  intensity: number;
+  pulseSpeed: string;
+  label: string;
+  hudRing: boolean;
+}
+
+export interface EyeConfig {
+  // Color settings
+  colorPreset: EyeColorPreset;
+  hue: number; // 0 - 360 degrees (Hue Shifter)
+  saturation: number; // 0 - 200%
+  brightness: number; // 50 - 150%
+  irisColor: string; // hex
+  pupilColor: string; // hex
+  glowColor: string; // rgba or hex
+  outerAccentColor: string; // hex
+  hudColor: string; // hex
+
+  // Animation settings
+  animationSpeed: number; // 0.2 - 3.0 (default 1.0)
+  blinkFrequency: number; // seconds between blinks (2 - 15, default 5)
+  blinkDuration: number; // milliseconds (80 - 300, default 160)
+  pupilMovementSpeed: number; // 0.1 - 2.0 (default 1.0)
+  irisRotationSpeed: number; // seconds per rotation (5 - 60, default 30)
+  glowIntensity: number; // 0.1 - 2.0 (default 1.0)
+  hudIntensity: number; // 0 - 1.0 (default 0.7)
+  pulseIntensity: number; // 0 - 2.0 (default 1.0)
+  idleAnimationIntensity: number; // 0 - 1.0 (default 0.5)
+
+  // Eye Movement
+  cursorTracking: boolean;
+  pupilTracking: boolean;
+  focusTracking: boolean;
+  attentionResponse: boolean;
+  gazeDirection: 'auto' | 'center' | 'left' | 'right' | 'up' | 'down';
+  movementSensitivity: number; // 0.1 - 3.0 (default 1.0)
+  responseMode: EyeResponseMode;
+
+  // Sound FX
+  soundEnabled: boolean;
+}
+
 export type PageId = 
   | 'command-center'
   | 'movie-library'
@@ -904,4 +1271,6 @@ export type PageId =
   | 'analytics'
   | 'content-planner'
   | 'web-series'
+  | 'eye-control'
+  | 'export'
   | 'settings';

@@ -3,8 +3,9 @@
  * Displays live AI core status, GPU/MEM telemetry, project switcher, and user clearance.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
+import { DevilEye, DevilEyeState } from './DevilEye';
 import { 
   Activity, 
   Cpu, 
@@ -37,11 +38,26 @@ export const Header: React.FC = () => {
     toggleSound,
     navigateTo,
     setIsExportModalOpen,
-    toggleMobileSidebar
+    toggleMobileSidebar,
+    activeAnalysisJob,
+    activeMovieRecord,
+    isAiThinking
   } = useApp();
 
   const [isProjectDropdownOpen, setIsProjectDropdownOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+
+  // Derive real-time Devil's Eye state strictly from active job/movie telemetry
+  const eyeState: DevilEyeState = useMemo(() => {
+    if (activeAnalysisJob?.status === 'RUNNING') return 'ANALYZING';
+    if (activeAnalysisJob?.status === 'FAILED') return 'ERROR';
+    if (activeMovieRecord?.status === 'FAILED') return 'ERROR';
+    if (isAiThinking) return 'THINKING';
+    if (activeMovieRecord?.status === 'UPLOADING' || activeMovieRecord?.status === 'GEMINI_PROCESSING') return 'PROCESSING';
+    if (activeMovieRecord?.geminiFileState === 'ACTIVE' && !activeAnalysisJob) return 'FOCUS';
+    if (currentProject.analysisStatus === 'ANALYSIS COMPLETE') return 'WATCHING';
+    return 'IDLE';
+  }, [activeAnalysisJob, activeMovieRecord, isAiThinking, currentProject.analysisStatus]);
 
   return (
     <header className="h-14 bg-[#040814]/90 border-b border-cyan-500/20 backdrop-blur-md px-4 flex items-center justify-between z-30 select-none relative">
@@ -61,6 +77,15 @@ export const Header: React.FC = () => {
         >
           <Menu className="w-4 h-4" />
         </button>
+
+        {/* Devil's Eye AI Logo & Live State */}
+        <div 
+          onClick={() => navigateTo('eye-control')}
+          className="flex items-center space-x-2 cursor-pointer group"
+          title="Open The Devil's Eye AI Core Control Center"
+        >
+          <DevilEye size="xs" state={eyeState} interactive={true} />
+        </div>
 
         {/* Status indicator pill */}
         <div className="flex items-center space-x-2 bg-slate-900/80 border border-emerald-500/40 rounded-full px-2.5 sm:px-3 py-1 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
@@ -179,7 +204,7 @@ export const Header: React.FC = () => {
         <button
           onClick={() => {
             playHudClick();
-            setIsExportModalOpen(true);
+            navigateTo('export');
           }}
           className="hidden sm:flex items-center space-x-1.5 bg-gradient-to-r from-cyan-600/80 to-blue-600/80 hover:from-cyan-500 hover:to-blue-500 text-white border border-cyan-400/40 rounded px-3 py-1.5 text-xs font-tech font-semibold shadow-[0_0_12px_rgba(6,182,212,0.3)] transition-all cursor-pointer"
         >

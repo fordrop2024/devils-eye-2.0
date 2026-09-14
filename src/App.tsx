@@ -12,6 +12,7 @@ import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
 import { ToastContainer } from './components/common/ToastContainer';
 import { ExportModal } from './components/common/ExportModal';
+import { MovieIngestionCenter } from './components/common/MovieIngestionCenter';
 
 // 17 Module Pages
 import { CommandCenter } from './pages/CommandCenter';
@@ -31,6 +32,8 @@ import { AnalyticsCenter } from './pages/AnalyticsCenter';
 import { ContentPlanner } from './pages/ContentPlanner';
 import { WebSeriesManager } from './pages/WebSeriesManager';
 import { SettingsView } from './pages/SettingsView';
+import { EyeControl } from './pages/EyeControl';
+import { ExportView } from './pages/ExportView';
 
 const MainWorkstation: React.FC = () => {
   const { isAuthenticated, activePage } = useApp();
@@ -78,6 +81,10 @@ const MainWorkstation: React.FC = () => {
         return <ContentPlanner />;
       case 'web-series':
         return <WebSeriesManager />;
+      case 'eye-control':
+        return <EyeControl />;
+      case 'export':
+        return <ExportView />;
       case 'settings':
         return <SettingsView />;
       default:
@@ -104,6 +111,7 @@ const MainWorkstation: React.FC = () => {
       {/* Global Holographic Modals & Notifications */}
       <ToastContainer />
       <ExportModal />
+      <MovieIngestionCenter />
     </div>
   );
 };

@@ -48,7 +48,18 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
   onClose,
   onProceedToIntelligence,
 }) => {
-  const { currentProject, updateCurrentProject, addToast, addLog, navigateTo } = useApp();
+  const {
+    currentProject,
+    updateCurrentProject,
+    addToast,
+    addLog,
+    navigateTo,
+    uploadMovie,
+    isMovieUploading,
+    movieUploadProgress,
+    activeMovieRecord,
+    startAnalysisJob,
+  } = useApp();
 
   const [projectType, setProjectType] = useState<ProjectType>(currentProject.type || 'movie');
   const [isDragging, setIsDragging] = useState(false);
@@ -248,7 +259,7 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
     });
   };
 
-  /** Trigger staged visual ingestion animation */
+  /** Trigger real cinema ingestion and upload pipeline */
   const handleIngestFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
 
@@ -256,44 +267,76 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
     setIsProcessing(true);
     setProcessingProgress(0);
 
+    const fileArray = Array.from(files);
+    const videoFile = fileArray.find(
+      f => f.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name)
+    );
+
     const newRecords: MediaFileRecord[] = [];
 
-    // Stage 1 to 7 animation
-    for (let s = 0; s < INGESTION_STAGES.length; s++) {
-      setIngestionStageIndex(s);
-      addLog(`[INGESTION] > ${INGESTION_STAGES[s]}`, 'info');
-      setProcessingProgress(Math.round(((s + 1) / INGESTION_STAGES.length) * 100));
-      await new Promise(r => setTimeout(r, 450));
-    }
+    // Stage 0: Media received
+    setIngestionStageIndex(0);
+    addLog(`[INGESTION] Media stream received (${fileArray.length} file(s))`, 'info');
+    setProcessingProgress(15);
+    await new Promise(r => setTimeout(r, 300));
 
-    // Process all dropped files
-    for (let i = 0; i < files.length; i++) {
-      const rec = await extractFileMetadata(files[i]);
+    // Stage 1: Extract browser metadata
+    setIngestionStageIndex(1);
+    addLog(`[INGESTION] Extracting audio/video metadata and container tags...`, 'info');
+    setProcessingProgress(35);
+
+    for (let i = 0; i < fileArray.length; i++) {
+      const rec = await extractFileMetadata(fileArray[i]);
       newRecords.push(rec);
     }
 
-    const merged = [...stagedFiles, ...newRecords];
-    setStagedFiles(merged);
+    if (videoFile) {
+      const videoMeta = newRecords.find(r => r.name === videoFile.name);
+      
+      // Stage 2: Real upload to backend & Gemini Files API
+      setIngestionStageIndex(2);
+      addLog(`[INGESTION] Uploading movie "${videoFile.name}" to server & Gemini Files API...`, 'info');
+      setProcessingProgress(55);
 
-    // If main video was ingested, update current project duration and resolution
-    const primaryVideo = newRecords.find(f => f.type === 'video');
-    if (primaryVideo) {
-      updateCurrentProject({
-        mediaFiles: merged,
-        duration: primaryVideo.durationFormatted,
-        durationSec: primaryVideo.duration,
-        resolution: primaryVideo.resolution,
-        status: 'ingested',
-      });
+      try {
+        const record = await uploadMovie(videoFile, {
+          duration: videoMeta?.duration,
+          resolution: videoMeta?.resolution,
+          fps: videoMeta?.fps,
+        });
+
+        const updatedRecords = newRecords.map(r => {
+          if (r.name === videoFile.name) {
+            return {
+              ...r,
+              id: record.id,
+              url: record.url || r.url,
+              status: record.status === 'FAILED' ? ('error' as const) : ('ready' as const),
+            };
+          }
+          return r;
+        });
+
+        const merged = [...stagedFiles.filter(f => f.name !== videoFile.name), ...updatedRecords];
+        setStagedFiles(merged);
+
+        setIngestionStageIndex(6); // Initializing Cinema Intelligence
+        setProcessingProgress(100);
+        addLog(`[INGESTION] Real movie record created (${record.id}). Gemini status: ${record.status}`, 'success');
+      } catch (err: any) {
+        addLog(`[INGESTION] Video upload failed: ${err.message}`, 'error');
+        addToast('Ingestion Error', err.message || 'Video upload failed', 'error');
+      }
     } else {
-      updateCurrentProject({
-        mediaFiles: merged,
-      });
+      const merged = [...stagedFiles, ...newRecords];
+      setStagedFiles(merged);
+      updateCurrentProject({ mediaFiles: merged });
+      setIngestionStageIndex(6);
+      setProcessingProgress(100);
     }
 
     setIsProcessing(false);
     playHudSuccess();
-    addToast('Media Ingestion Complete', `Ingested ${newRecords.length} cinema asset(s) with full metadata`, 'success');
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -493,6 +536,76 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
             </div>
           )}
 
+          {/* Gemini Files API Pipeline Real-Time Status Card */}
+          {activeMovieRecord && (
+            <div className="p-3.5 rounded-lg bg-[#040c1e] border border-cyan-500/40 hud-corners space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center space-x-2">
+                  <Cpu className={`w-4 h-4 shrink-0 ${activeMovieRecord.status === 'GEMINI_PROCESSING' || isMovieUploading ? 'text-cyan-400 animate-spin' : activeMovieRecord.status === 'ACTIVE' ? 'text-emerald-400' : 'text-amber-400'}`} />
+                  <span className="font-tech font-bold text-slate-100 uppercase tracking-wider">
+                    GEMINI FILES API PIPELINE
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono border uppercase ${
+                    activeMovieRecord.status === 'ACTIVE'
+                      ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                      : activeMovieRecord.status === 'GEMINI_PROCESSING'
+                      ? 'bg-cyan-950/70 border-cyan-500/50 text-cyan-300 animate-pulse'
+                      : activeMovieRecord.status === 'FAILED'
+                      ? 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                      : 'bg-amber-950/70 border-amber-500/50 text-amber-300'
+                  }`}>
+                    {activeMovieRecord.status}
+                  </span>
+                </div>
+
+                <div className="text-[10px] font-mono text-slate-400">
+                  FILE ID: <span className="text-cyan-400 font-bold">{activeMovieRecord.geminiFileId || 'QUEUED'}</span>
+                </div>
+              </div>
+
+              {isMovieUploading && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] font-mono text-cyan-300">
+                    <span>Uploading cinema container to server...</span>
+                    <span>{movieUploadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-cyan-500/30">
+                    <div
+                      className="h-full bg-cyan-400 transition-all duration-200"
+                      style={{ width: `${movieUploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="text-xs font-mono text-slate-300 flex items-center justify-between">
+                <span>{activeMovieRecord.statusMessage || 'Processing movie container...'}</span>
+                {activeMovieRecord.status === 'GEMINI_PROCESSING' && (
+                  <span className="text-[10px] text-cyan-400 font-mono animate-pulse">Polling Gemini status (every 3s)...</span>
+                )}
+              </div>
+
+              {activeMovieRecord.status === 'ACTIVE' && (
+                <div className="p-2 rounded bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-[11px] font-mono text-emerald-300">
+                  <div className="flex items-center space-x-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>Gemini multimodal video state is ACTIVE. Ready to synthesize cinema intelligence.</span>
+                  </div>
+                  <span className="text-[10px] font-tech font-bold text-emerald-400 uppercase">READY</span>
+                </div>
+              )}
+
+              {activeMovieRecord.status === 'FAILED' && (
+                <div className="p-2 rounded bg-rose-950/40 border border-rose-500/30 text-[11px] font-mono text-rose-300">
+                  <div className="flex items-center space-x-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    <span>Gemini file processing failed: {activeMovieRecord.errorMessage || 'Invalid video stream'}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Ingested Media Files Inspector Table */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs font-tech font-bold uppercase text-cyan-300 border-b border-cyan-500/20 pb-1.5">
@@ -506,47 +619,62 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
               </div>
             ) : (
               <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                {stagedFiles.map((file) => (
-                  <div
-                    key={file.id}
-                    className="p-3 rounded bg-[#050b18] border border-cyan-500/20 hover:border-cyan-400/50 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <div className="p-2 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-300 flex-shrink-0">
-                        {file.type === 'video' ? <Film className="w-4 h-4" /> :
-                         file.type === 'audio' ? <Music className="w-4 h-4" /> :
-                         <FileText className="w-4 h-4" />}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-tech font-bold text-slate-100 truncate">{file.name}</div>
-                        <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-400 mt-0.5">
-                          <span>{file.resolution}</span>
-                          <span>•</span>
-                          <span>{file.fps > 0 ? `${file.fps} fps` : 'Audio Stream'}</span>
-                          <span>•</span>
-                          <span>{file.durationFormatted}</span>
-                          <span>•</span>
-                          <span className="text-cyan-400">{file.fileSizeFormatted}</span>
+                {stagedFiles.map((file) => {
+                  const isMainVideo = file.type === 'video';
+                  const isMainActive = isMainVideo && activeMovieRecord?.status === 'ACTIVE';
+                  const isMainProcessing = isMainVideo && activeMovieRecord?.status === 'GEMINI_PROCESSING';
+                  const isMainUploading = isMainVideo && isMovieUploading;
+
+                  return (
+                    <div
+                      key={file.id}
+                      className="p-3 rounded bg-[#050b18] border border-cyan-500/20 hover:border-cyan-400/50 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="flex items-center space-x-3 min-w-0">
+                        <div className="p-2 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-300 flex-shrink-0">
+                          {file.type === 'video' ? <Film className="w-4 h-4" /> :
+                           file.type === 'audio' ? <Music className="w-4 h-4" /> :
+                           <FileText className="w-4 h-4" />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-tech font-bold text-slate-100 truncate">{file.name}</div>
+                          <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-400 mt-0.5">
+                            <span>{file.resolution}</span>
+                            <span>•</span>
+                            <span>{file.fps > 0 ? `${file.fps} fps` : 'Audio Stream'}</span>
+                            <span>•</span>
+                            <span>{file.durationFormatted}</span>
+                            <span>•</span>
+                            <span className="text-cyan-400">{file.fileSizeFormatted}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center justify-between md:justify-end space-x-3 flex-shrink-0">
-                      <div className="text-right text-[10px] font-mono">
-                        <div className="text-emerald-400 font-bold">READY FOR AI BRAIN</div>
-                        <div className="text-slate-500">{file.audioCodec}</div>
+                      <div className="flex items-center justify-between md:justify-end space-x-3 flex-shrink-0">
+                        <div className="text-right text-[10px] font-mono">
+                          {isMainUploading ? (
+                            <div className="text-amber-400 font-bold animate-pulse">UPLOADING {movieUploadProgress}%</div>
+                          ) : isMainProcessing ? (
+                            <div className="text-cyan-400 font-bold animate-pulse">GEMINI PROCESSING...</div>
+                          ) : isMainActive ? (
+                            <div className="text-emerald-400 font-bold">GEMINI ACTIVE // READY</div>
+                          ) : (
+                            <div className="text-emerald-400 font-bold">READY FOR AI BRAIN</div>
+                          )}
+                          <div className="text-slate-500">{file.audioCodec}</div>
+                        </div>
+
+                        <button
+                          onClick={() => removeFile(file.id)}
+                          className="p-1 text-slate-500 hover:text-rose-400 rounded hover:bg-rose-950/40 transition-colors cursor-pointer"
+                          title="Remove file"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
                       </div>
-
-                      <button
-                        onClick={() => removeFile(file.id)}
-                        className="p-1 text-slate-500 hover:text-rose-400 rounded hover:bg-rose-950/40 transition-colors cursor-pointer"
-                        title="Remove file"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -566,17 +694,54 @@ export const MovieIngestionCenter: React.FC<MovieIngestionCenterProps> = ({
               }}
               className="px-4 py-2 rounded text-xs font-tech text-slate-300 hover:text-white hover:bg-slate-900 border border-slate-700 transition-colors cursor-pointer"
             >
-              CANCEL
+              CLOSE
             </button>
 
-            <button
-              onClick={handleProceed}
-              disabled={stagedFiles.length === 0}
-              className="px-5 py-2 rounded bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-tech font-bold text-xs border border-cyan-400/50 shadow-[0_0_15px_rgba(0,240,255,0.3)] flex items-center space-x-2 cursor-pointer disabled:opacity-50"
-            >
-              <span>PROCEED TO CINEMA INTELLIGENCE BRAIN</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            {activeMovieRecord && activeMovieRecord.status === 'ACTIVE' ? (
+              <button
+                onClick={async () => {
+                  playHudSuccess();
+                  await startAnalysisJob();
+                  onClose();
+                  if (onProceedToIntelligence) {
+                    onProceedToIntelligence();
+                  } else {
+                    navigateTo('movie-intelligence');
+                  }
+                }}
+                className="px-5 py-2 rounded bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-tech font-bold text-xs border border-emerald-400/60 shadow-[0_0_15px_rgba(16,185,129,0.4)] flex items-center space-x-2 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-200 animate-pulse" />
+                <span>START AI ANALYSIS (GEMINI)</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            ) : activeMovieRecord && activeMovieRecord.status === 'GEMINI_PROCESSING' ? (
+              <button
+                disabled
+                className="px-5 py-2 rounded bg-slate-900/80 border border-slate-700 text-slate-400 font-tech text-xs flex items-center space-x-2 cursor-not-allowed"
+                title="Waiting for Gemini video file to transition from PROCESSING to ACTIVE"
+              >
+                <Clock className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                <span>GEMINI PROCESSING VIDEO (WAIT FOR ACTIVE)...</span>
+              </button>
+            ) : isMovieUploading ? (
+              <button
+                disabled
+                className="px-5 py-2 rounded bg-slate-900/80 border border-slate-700 text-slate-400 font-tech text-xs flex items-center space-x-2 cursor-not-allowed"
+              >
+                <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                <span>UPLOADING MOVIE ({movieUploadProgress}%)...</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleProceed}
+                disabled={stagedFiles.length === 0}
+                className="px-5 py-2 rounded bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-tech font-bold text-xs border border-cyan-400/50 shadow-[0_0_15px_rgba(0,240,255,0.3)] flex items-center space-x-2 cursor-pointer disabled:opacity-50"
+              >
+                <span>PROCEED TO CINEMA INTELLIGENCE</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
